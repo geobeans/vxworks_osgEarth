@@ -1,0 +1,144 @@
+/* -*-c++-*- */
+/* osgEarth - Dynamic map generation toolkit for OpenSceneGraph
+ * Copyright 2008-2010 Pelican Mapping
+ * http://osgearth.org
+ *
+ * osgEarth is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>
+ */
+
+#ifndef OSGEARTH_MODEL_SOURCE_H
+#define OSGEARTH_MODEL_SOURCE_H 1
+
+#include <osgEarth/Common>
+#include <osgEarth/Config>
+#include <osgEarth/Progress>
+#include <osgEarth/Revisioning>
+#include <osg/Referenced>
+
+namespace osgEarth
+{   
+    class Map;
+    
+    /**
+     * Configuration options for a models source.
+     */
+    class OSGEARTH_EXPORT ModelSourceOptions : public DriverConfigOptions
+    {
+    public:
+        ModelSourceOptions( const ConfigOptions& options =ConfigOptions() ) :
+              DriverConfigOptions( options ),
+              _minRange(0),
+              _maxRange(FLT_MAX),
+              _renderOrder( 11 ),
+              _depthTestEnabled( true ) { fromConfig(_conf); }
+
+    public: // properties
+
+        /** minimum camera range at which the data is visible */
+        optional<float>& minRange() { return _minRange; }
+        const optional<float>& minRange() const { return _minRange; }
+
+        /** maximum camera range at which the data is visible */
+        optional<float>& maxRange() { return _maxRange; }
+        const optional<float>& maxRange() const { return _maxRange; }
+
+        /** render bin order */
+        optional<int>& renderOrder() { return _renderOrder; }
+        const optional<int>& renderOrder() const { return _renderOrder; }
+
+        /** whether to read the depth buffer when rendering */
+        optional<bool>& depthTestEnabled() { return _depthTestEnabled; }
+        const optional<bool>& depthTestEnabled() const { return _depthTestEnabled; }
+
+    public:
+        virtual Config getConfig() const;
+
+    protected:
+        virtual void mergeConfig( const Config& conf );
+        
+    private:
+        void fromConfig( const Config& conf );
+
+        optional<float> _minRange, _maxRange;
+        optional<int> _renderOrder;
+        optional<bool> _depthTestEnabled;
+        optional<bool> _overlay;
+    };
+
+    /**
+     * A ModelSource is a plugin object that generates OSG nodes.
+     */
+    class OSGEARTH_EXPORT ModelSource : public virtual Revisioned<osg::Object>
+    {
+    public:        
+        ModelSource( const ModelSourceOptions& options =ModelSourceOptions() );
+
+        /**
+         * Subclass implements this method to create the mode node.
+         */
+        virtual osg::Node* createNode( ProgressCallback* progress =0L ) =0;
+
+
+    public: // META_Object specialization
+        virtual osg::Object* cloneType() const { return 0; } // cloneType() not appropriate
+        virtual osg::Object* clone(const osg::CopyOp&) const { return 0; } // clone() not appropriate
+        virtual bool isSameKindAs(const osg::Object* obj) const { return dynamic_cast<const ModelSource*>(obj)!=NULL; }
+        virtual const char* className() const { return "ModelSource"; }
+        virtual const char* libraryName() const { return "osgEarth"; }
+
+    public:
+		/** Initialize the NodeSource. */
+		virtual void initialize(
+            const std::string& referenceURI,
+            const Map* map ) { }
+
+        const ModelSourceOptions& getOptions() const {
+            return _options; }
+
+    protected:
+        virtual ~ModelSource() { }
+
+    private:
+        const ModelSourceOptions _options;
+        optional<double> _minRange;
+        optional<double> _maxRange;
+        optional<int>    _renderOrder;
+
+        friend class Map;
+        friend class MapEngine;
+        friend class ModelSourceFactory;
+    };
+
+    //--------------------------------------------------------------------
+
+    class OSGEARTH_EXPORT ModelSourceDriver : public osgDB::ReaderWriter
+    {
+    protected:
+        const ModelSourceOptions& getModelSourceOptions( const osgDB::ReaderWriter::Options* rwOpt ) const;
+    };
+
+    //--------------------------------------------------------------------
+
+    /**
+     * Creates TileSource instances and chains them together to create
+     * tile source "pipelines" for data access and processing.
+     */
+    class OSGEARTH_EXPORT ModelSourceFactory
+    {   
+	public:
+        static ModelSource* create( const ModelSourceOptions& options );
+    };
+}
+
+#endif // OSGEARTH_MODEL_SOURCE_H

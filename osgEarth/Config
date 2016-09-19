@@ -1,0 +1,481 @@
+/* -*-c++-*- */
+/* osgEarth - Dynamic map generation toolkit for OpenSceneGraph
+ * Copyright 2008-2010 Pelican Mapping
+ * http://osgearth.org
+ *
+ * osgEarth is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>
+ */
+#ifndef OSGEARTH_CONFIG_H
+#define OSGEARTH_CONFIG_H 1
+
+#include <osgEarth/Common>
+#include <osgEarth/StringUtils>
+#include <osgEarth/URI>
+#include <osgDB/ReaderWriter>
+#include <osg/Version>
+#if OSG_MIN_VERSION_REQUIRED(2,9,5)
+#include <osgDB/Options>
+#endif
+#include <list>
+#include <stack>
+#include <istream>
+
+namespace osgEarth
+{
+    typedef std::list<class Config> ConfigSet;
+
+
+    // general-purpose name/value pair set.
+    struct Properties : public std::map<std::string,std::string> {
+        std::string get( const std::string& key ) const {
+            std::map<std::string,std::string>::const_iterator i = find(key);
+            return i != end()? i->second : std::string();
+        }
+    };
+
+    /**
+     * Config is a general-purpose container for serializable data. You store an object's members
+     * to Config, and then translate the Config to a particular format (like XML or JSON). Likewise,
+     * the object can de-serialize a Config back into member data. Config support the optional<>
+     * template for optional values.
+     */
+    class OSGEARTH_EXPORT Config
+    {
+    public:
+        Config() { }
+
+        Config( const std::string& key ) : _key(key) { }
+
+        Config( const std::string& key, const std::string& value ) : _key( key ), _defaultValue( value ) { }
+
+        Config( const Config& rhs ) : _key(rhs._key), _defaultValue(rhs._defaultValue), _attrs(rhs._attrs), _children(rhs._children), _refMap(rhs._refMap), _uriContext(rhs._uriContext) { }
+
+        /** Context for resolving relative URIs that occur in this Config */
+        void setURIContext( const URIContext& value );
+        const URIContext& uriContext() const { return _uriContext; }
+
+        bool loadXML( std::istream& in );
+
+        bool empty() const {
+            return _key.empty() && _defaultValue.empty() && _children.empty();
+        }
+
+        std::string& key() { return _key; }
+        const std::string& key() const { return _key; }
+
+        const std::string& value() const { return _defaultValue; }
+        std::string& value() { return _defaultValue; }
+
+        Properties& attrs() { return _attrs; }
+        const Properties& attrs() const { return _attrs; }
+
+        std::string attr( const std::string& name ) const {
+            Properties::const_iterator i = _attrs.find(name);
+            return i != _attrs.end()? trim(i->second) : "";
+        }
+
+        std::string& attr( const std::string& name ) { return _attrs[name]; }
+        
+        //ConfigSet& children() { return _children; }
+        const ConfigSet& children() const { return _children; }
+
+        const ConfigSet children( const std::string& key ) const {
+            ConfigSet r;
+            for(ConfigSet::const_iterator i = _children.begin(); i != _children.end(); i++ ) {
+                if ( i->key() == key )
+                    r.push_back( *i );
+            }
+            return r;
+        }
+
+        bool hasChild( const std::string& key ) const {
+            for(ConfigSet::const_iterator i = _children.begin(); i != _children.end(); i++ )
+                if ( i->key() == key )
+                    return true;
+            return false;
+        }
+
+        void remove( const std::string& key ) {
+            _attrs.erase(key);            
+            for(ConfigSet::iterator i = _children.begin(); i != _children.end(); ) {
+                if ( i->key() == key )
+                    i = _children.erase( i );
+                else
+                    ++i;
+            }
+        }
+
+        const Config& child( const std::string& key ) const;
+
+        void merge( const Config& rhs );
+
+        template<typename T>
+        void addIfSet( const std::string& key, const optional<T>& opt ) {
+            if ( opt.isSet() ) {
+                add( key, osgEarth::toString<T>( opt.value() ) );
+            }
+        }
+        
+        template<typename T>
+        void addObjIfSet( const std::string& key, const osg::ref_ptr<T>& opt ) {
+            if ( opt.valid() ) {
+                Config conf = opt->getConfig();
+                conf.key() = key;
+                add( conf );
+            }
+        }
+
+        template<typename T>
+        void addObjIfSet( const std::string& key, const optional<T>& obj ) {
+            if ( obj.isSet() ) {
+                Config conf = obj->getConfig();
+                conf.key() = key;
+                add( conf );
+            }
+        }
+
+        template<typename X, typename Y>
+        void addIfSet( const std::string& key, const std::string& val, const optional<X>& target, const Y& targetValue ) {
+            if ( target.isSetTo( targetValue ) )
+                add( key, val );
+        }
+
+        void addChild( const std::string& key, const std::string& value ) {
+            add( key, value );
+        }
+
+        void add( const std::string& key, const std::string& value ) {
+            _children.push_back( Config( key, value ) );
+            _children.back().setURIContext( _uriContext );
+        }
+
+        void addChild( const Config& conf ) {
+            add( conf );
+        }
+
+        void add( const Config& conf ) {
+            _children.push_back( conf );
+            _children.back().setURIContext( _uriContext );
+        }
+
+        void add( const std::string& key, const Config& conf ) {
+            Config temp = conf;
+            temp.key() = key;
+            add( temp );
+        }
+
+        void add( const ConfigSet& set ) {
+            for( ConfigSet::const_iterator i = set.begin(); i != set.end(); i++ )
+                add( *i );
+        }
+
+        template<typename T>
+        void updateIfSet( const std::string& key, const optional<T>& opt ) {
+            if ( opt.isSet() ) {
+                remove(key);
+                add( key, osgEarth::toString<T>( opt.value() ) );
+            }
+        }
+        
+        template<typename T>
+        void updateObjIfSet( const std::string& key, const osg::ref_ptr<T>& opt ) {
+            if ( opt.valid() ) {
+                remove(key);
+                Config conf = opt->getConfig();
+                conf.key() = key;
+                add( conf );
+            }
+        }
+
+        template<typename T>
+        void updateObjIfSet( const std::string& key, const optional<T>& obj ) {
+            if ( obj.isSet() ) {
+                remove(key);
+                Config conf = obj->getConfig();
+                conf.key() = key;
+                add( conf );
+            }
+        }
+
+        template<typename X, typename Y>
+        void updateIfSet( const std::string& key, const std::string& val, const optional<X>& target, const Y& targetValue ) {
+            if ( target.isSetTo( targetValue ) ) {
+                remove(key);
+                add( key, val );
+            }
+        }
+
+        void updateChild( const std::string& key, const std::string& value ) {
+            update( key, value );
+        }
+
+        void update( const std::string& key, const std::string& value ) {
+            remove(key);
+            add( Config(key, value) );
+            //_children.push_back( Config( key, value ) );
+        }
+
+        void updateChild( const Config& conf ) {
+            update( conf );
+        }
+
+        void update( const Config& conf ) {
+            remove(conf.key());
+            add( conf );
+            //_children.push_back( conf );
+        }
+
+        void update( const std::string& key, const Config& conf ) {
+            remove(key);
+            Config temp = conf;
+            temp.key() = key;
+            add( temp );
+        }
+
+
+        bool hasValue( const std::string& key ) const {
+            return !value(key).empty();
+        }
+
+        const std::string value( const std::string& key ) const {
+            std::string r = trim(child(key).value());
+            if ( r.empty() )
+                r = attr(key);
+            return r;
+        }
+
+        // populates a primitive value.
+        template<typename T>
+        T value( const std::string& key, T fallback ) const {
+            std::string r = attr(key);
+            if ( r.empty() && hasChild( key ) )
+                r = child(key).value();
+            return osgEarth::as<T>( r, fallback );
+        }
+
+        bool boolValue( bool fallback ) const {
+            return osgEarth::as<bool>( _defaultValue, fallback );
+        }
+
+        // populates the output value iff the Config exists.
+        template<typename T>
+        bool getIfSet( const std::string& key, optional<T>& output ) const {
+            std::string r = attr(key);
+            if ( r.empty() && hasChild(key) )
+                r = child(key).value();
+            if ( !r.empty() ) {
+                output = osgEarth::as<T>( r, output.defaultValue() );
+                return true;
+            } 
+            else
+                return false;
+        }
+
+        // for Configurable's
+        template<typename T>
+        bool getObjIfSet( const std::string& key, optional<T>& output ) const {
+            if ( hasChild( key ) ) {
+                output = T( child(key) );
+                return true;
+            }
+            else
+                return false;
+        }
+
+        // populates a Referenced that takes a Config in the constructor.
+        template<typename T>
+        bool getObjIfSet( const std::string& key, osg::ref_ptr<T>& output ) const {
+            if ( hasChild( key ) ) {
+                output = new T( child(key) );
+                return true;
+            }
+            else
+                return false;
+        }
+
+        template<typename X, typename Y>
+        bool getIfSet( const std::string& key, const std::string& val, optional<X>& target, const Y& targetValue ) const {
+            if ( hasValue( key ) && value( key ) == val ) {
+                target = targetValue;
+                return true;
+            }
+            else 
+                return false;
+        }
+
+        std::string toString( int indent =0 ) const;
+
+        std::string toHashString() const;
+
+        /** support for conveying non-serializable objects in a Config (in memory only) */
+
+        typedef std::map<std::string, osg::ref_ptr<osg::Referenced> > RefMap;
+
+        void addNonSerializable( const std::string& key, osg::Referenced* obj ) {
+            _refMap[key] = obj;
+        }
+        
+        void updateNonSerializable( const std::string& key, osg::Referenced* obj ) {
+            _refMap[key] = obj;
+        }
+
+        template<typename X>
+        X* getNonSerializable( const std::string& key ) const {
+            RefMap::const_iterator i = _refMap.find(key);
+            return i == _refMap.end() ? 0 : dynamic_cast<X*>( i->second.get() );
+        }
+
+    protected:
+        std::string _key;
+        std::string _defaultValue;
+        Properties  _attrs;
+        ConfigSet   _children;   
+        URIContext  _uriContext;
+
+        RefMap _refMap;
+    };
+
+    // specialization for Config
+    template <> inline
+    void Config::addIfSet<Config>( const std::string& key, const optional<Config>& opt ) {
+        if ( opt.isSet() ) {
+            Config conf = opt.value();
+            conf.key() = key;
+            add( conf );
+        }
+    }
+
+    template<> inline
+    void Config::updateIfSet<Config>( const std::string& key, const optional<Config>& opt ) {
+        if ( opt.isSet() ) {
+            remove(key);
+            Config conf = opt.value();
+            conf.key() = key;
+            add( conf );
+        }
+    }
+
+    template<> inline
+    bool Config::getIfSet<Config>( const std::string& key, optional<Config>& output ) const {
+        if ( hasChild( key ) ) {
+            output = child(key);
+            return true;
+        }
+        else
+            return false;
+    }
+
+    // specializations for URI:
+    template <> inline
+    void Config::addIfSet<URI>( const std::string& key, const optional<URI>& opt ) {
+        if ( opt.isSet() ) {
+            add( Config(key, opt->base()) );
+        }
+    }
+
+    template<> inline
+    void Config::updateIfSet<URI>( const std::string& key, const optional<URI>& opt ) {
+        if ( opt.isSet() ) {
+            remove(key);
+            add( Config(key, opt->base()) );
+        }
+    }
+
+    template<> inline
+    bool Config::getIfSet<URI>( const std::string& key, optional<URI>& output ) const {
+        if ( hasValue( key ) ) {
+            output = URI( value(key), _uriContext );
+            return true;
+        }
+        else
+            return false;
+    }
+
+    /**
+     * Base class for all serializable options classes.
+     */
+    class ConfigOptions // header-only (no export required)
+    {
+    public:
+        ConfigOptions( const Config& conf =Config() )
+            : _conf( conf ) { }
+        ConfigOptions( const ConfigOptions& rhs )
+            : _conf( rhs.getConfig() ) { }
+
+        ConfigOptions& operator = ( const ConfigOptions& rhs ) {
+            if ( this != &rhs ) {
+                _conf = rhs.getConfig();
+                mergeConfig( _conf );
+            }
+            return *this;
+        }
+
+        void merge( const ConfigOptions& rhs ) {
+            _conf.merge( rhs._conf );
+            mergeConfig( rhs.getConfig() );
+        }
+
+        virtual Config getConfig() const { return _conf; }
+
+    protected:
+        virtual void mergeConfig( const Config& conf ) { }
+
+        Config _conf;
+    };
+
+    /**
+     * Base configoptions class for driver options.
+     */
+    class DriverConfigOptions : public ConfigOptions // header-only (no export required)
+    {
+    public:
+        DriverConfigOptions( const ConfigOptions& rhs =ConfigOptions() )
+            : ConfigOptions( rhs ) { fromConfig( _conf ); }
+
+        /** Gets or sets the name of the driver to load */
+        void setDriver( const std::string& value ) { _driver = value; }
+        const std::string& getDriver() const { return _driver; }
+
+        ///** Gets or sets the name of the object */
+        //void setName( const std::string& value ) { _name = value; }
+        //const std::string& getName() const { return _name; }
+
+    public:
+        virtual Config getConfig() const {
+            Config conf = ConfigOptions::getConfig();
+            //conf.attr("name") = _name;
+            conf.attr("driver") = _driver;
+            return conf;
+        }
+
+        virtual void mergeConfig( const Config& conf ) {
+            ConfigOptions::mergeConfig(conf);
+            fromConfig(conf);
+        }
+
+    public:
+        void fromConfig( const Config& conf ) {
+            //_name = conf.value( "name" );
+            _driver = conf.value( "driver" );
+            if ( _driver.empty() && conf.hasValue("type") )
+                _driver = conf.value("type");
+        }
+
+    private:
+        std::string _name, _driver;
+    };
+}
+
+#endif // OSGEARTH_CONFIG_H
+

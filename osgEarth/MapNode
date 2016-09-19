@@ -1,0 +1,220 @@
+/* -*-c++-*- */
+/* osgEarth - Dynamic map generation toolkit for OpenSceneGraph
+* Copyright 2008-2010 Pelican Mapping
+* http://osgearth.org
+*
+* osgEarth is free software; you can redistribute it and/or modify
+* it under the terms of the GNU Lesser General Public License as published by
+* the Free Software Foundation; either version 2 of the License, or
+* (at your option) any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU Lesser General Public License for more details.
+*
+* You should have received a copy of the GNU Lesser General Public License
+* along with this program.  If not, see <http://www.gnu.org/licenses/>
+*/
+
+#ifndef OSGEARTH_MAPNODE_H
+#define OSGEARTH_MAPNODE_H 1
+
+#include <osgEarth/Common>
+#include <osgEarth/Map>
+#include <osgEarth/MapNodeOptions>
+#include <osgEarth/OverlayDecorator>
+#include <osgEarth/TerrainEngineNode>
+#include <osg/CoordinateSystemNode>
+#include <osgSim/OverlayNode>
+
+namespace osgEarth
+{
+    /**
+     * OSG Node that forms the root of an osgEarth map. This node is a "view" component
+     * that renders data from a "Map" data model.
+     */
+    class OSGEARTH_EXPORT MapNode : public osg::Group
+    {
+    public:
+
+        class TileRangeData : public osg::Referenced
+        {
+        public:
+            TileRangeData(double minRange, double maxRange):
+              _minRange( minRange ),
+              _maxRange( maxRange )
+            {
+            }
+
+            double _minRange;
+            double _maxRange;
+        };
+
+        /**
+         * Creates an empty map node.
+         */
+        MapNode();
+
+        /**
+         * Creates an empty map node.
+         * 
+         * @param options
+         *      Tile creation and rendering properties
+         */
+        MapNode( const MapNodeOptions& options );
+
+        /**
+         * Creates a new map node.
+         *
+         * @param map
+         *      Map data that this map node will render.
+         */
+        MapNode( Map* map );
+
+        /**
+         * Creates a new map node.
+         *
+         * @param map
+         *      Map data that this map node will render.
+         * @param options
+         *      Tile creation and rendering properties
+         */
+        MapNode( Map* map, const MapNodeOptions& options );
+
+        /**
+         * Attempts to load a MapNOde from a ".earth" file in the arguments list
+         */
+        static MapNode* load( class osg::ArgumentParser& arguments );
+
+    public:
+
+        virtual const char* libraryName() const { return "osgEarth"; }
+        virtual const char* className() const { return "MapNode"; }
+
+        /**
+         * Gets the Map that this MapNode is rendering.
+         */
+        Map* getMap();
+
+        /**
+         * Finds the topmost Map node in the specified scene graph, or returns NULL if
+         * no Map node exists in the graph.
+         *
+         * @param graph
+         *      Node graph in which to search for a MapNode
+         */
+        static MapNode* findMapNode( osg::Node* graph );   
+
+        /**
+         * Returns true if the realized terrain model is geocentric, false if
+         * it is flat/projected.
+         */
+        bool isGeocentric() const;
+
+        /**
+         * Accesses the group node that contains all the ModelLayers.
+         */
+        osg::Group* getModelLayerGroup() const;
+
+        /**
+         * Adds a node that decorates the terrain groups
+         */
+        void addTerrainDecorator( osg::Group* decorator );
+
+        /**
+         * Removes a node previously added via addTerrainDecorator.
+         */
+        void removeTerrainDecorator( osg::Group* decorator );
+
+        /**
+         * Accesses the group containing anything that will be "draped" on the terrain
+         * via the OverlayDecorator.
+         */
+        osg::Group* getOverlayGroup() { return _overlayModels.get(); }
+        
+        /**
+         * If you add or remove children to/fro the overlay group above, call this
+         * method to refresh the overlay graph.
+         */
+        void updateOverlayGraph();
+
+        /**
+         * Gets the engine properties associated with this node. The engine
+         * properties dictate how the map engine will create scene graph elements.
+         */
+        const MapNodeOptions& getMapNodeOptions() const;
+
+        /**
+         * Gets the underlying terrain engine that renders the terrain surface of the map.
+         */
+        TerrainEngineNode* getTerrainEngine() const;
+
+        /**
+         * Gets the Config object serializing external data. External data is information
+         * that osgEarth itself does not control, but that an app can include in the
+         * MapNode for the purposes of including it in a .earth file.
+         */
+        Config& externalConfig() { return _externalConf; }
+        const Config& externalConfig() const { return _externalConf; }
+
+    public: //override osg::Node
+
+        virtual osg::BoundingSphere computeBound() const;
+
+        virtual void traverse( class osg::NodeVisitor& nv );
+
+    protected:    
+
+        virtual ~MapNode();
+
+    private:
+
+        unsigned int _id;
+        osg::ref_ptr<Map> _map;
+        osg::ref_ptr< osg::Group > _models;
+        osg::ref_ptr< osg::Group > _overlayModels;
+        osg::ref_ptr< OverlayDecorator > _overlayDecorator;
+        MapNodeOptions _mapNodeOptions;
+        Config _externalConf;
+
+        // keep track of nodes created by model layers
+        typedef std::map<ModelLayer*,osg::Node*> ModelLayerNodeMap;
+        ModelLayerNodeMap _modelLayerNodes;
+        osg::Group* _maskLayerNode;
+
+        osg::ref_ptr< osgSim::OverlayNode > _pendingOverlayNode;
+        bool _pendingOverlayAutoSetTextureUnit;
+
+        unsigned _lastNumBlacklistedFilenames;
+
+        osg::ref_ptr<TerrainEngineNode> _terrainEngine;
+        bool _terrainEngineInitialized;
+
+        osg::ref_ptr<osg::Group> _terrainEngineContainer;
+
+    public: // MapCallback proxy
+
+        void onModelLayerAdded( ModelLayer*, unsigned int );
+        void onModelLayerRemoved( ModelLayer* );
+		void onModelLayerMoved( ModelLayer* layer, unsigned int oldIndex, unsigned int newIndex );
+#if 0
+        void onMaskLayerAdded( MaskLayer* );
+        void onMaskLayerRemoved( MaskLayer* );
+#endif
+
+    public:
+        void onModelLayerOverlayChanged( ModelLayer* layer );
+
+    private:
+
+        osg::ref_ptr< ModelLayerCallback > _modelLayerCallback;
+        osg::ref_ptr< MapCallback > _mapCallback;
+    
+        void init();
+        void adjustEventTraversalCount( int delta );
+    };
+
+} // namespace osgEarth
+
+#endif // OSGEARTH_MAPNODE_H

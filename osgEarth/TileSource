@@ -1,0 +1,411 @@
+/* -*-c++-*- */
+/* osgEarth - Dynamic map generation toolkit for OpenSceneGraph
+ * Copyright 2008-2010 Pelican Mapping
+ * http://osgearth.org
+ *
+ * osgEarth is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>
+ */
+
+#ifndef OSGEARTH_TILE_SOURCE_H
+#define OSGEARTH_TILE_SOURCE_H 1
+
+#include <limits.h>
+
+#include <osg/Version>
+
+#include <osgEarth/Common>
+#include <osgEarth/TileKey>
+#include <osgEarth/Profile>
+#include <osgEarth/Caching>
+#include <osgEarth/Progress>
+#include <osgEarth/ThreadingUtils>
+
+#include <osg/Referenced>
+#include <osg/Object>
+#include <osg/Image>
+#include <osg/Shape>
+#if OSG_MIN_VERSION_REQUIRED(2,9,5)
+#include <osgDB/Options>
+#endif
+#include <osgDB/ReadFile>
+
+#include <OpenThreads/Mutex>
+
+#include <string>
+
+
+#define TILESOURCE_CONFIG "tileSourceConfig"
+
+
+namespace osgEarth
+{   
+    /**
+     * Configuration options for a tile source driver.
+     */
+    class TileSourceOptions : public DriverConfigOptions // no export; header only
+    {
+    public:
+        
+        optional<int>& tileSize() { return _tileSize; }
+        const optional<int>& tileSize() const { return _tileSize; }
+
+        optional<float>& noDataValue() { return _noDataValue; }
+        const optional<float>& noDataValue() const { return _noDataValue; }
+
+        optional<float>& noDataMinValue() { return _noDataMinValue; }
+        const optional<float>& noDataMinValue() const { return _noDataMinValue; }
+
+        optional<float>& noDataMaxValue() { return _noDataMaxValue; }
+        const optional<float>& noDataMaxValue() const { return _noDataMaxValue; }
+
+        optional<std::string>& blacklistFilename() { return _blacklistFilename; }
+        const optional<std::string>& blacklistFilename() const { return _blacklistFilename; }
+
+        optional<ProfileOptions>& profile() { return _profileOptions; }
+        const optional<ProfileOptions>& profile() const { return _profileOptions; }
+
+        optional<int>& L2CacheSize() { return _L2CacheSize; }
+        const optional<int>& L2CacheSize() const { return _L2CacheSize; }
+
+    public:
+        TileSourceOptions( const ConfigOptions& options =ConfigOptions() )
+            : DriverConfigOptions( options ),
+              _tileSize( 256 ),
+              _noDataValue( (float)SHRT_MIN ),
+              _noDataMinValue( -FLT_MAX ),
+              _noDataMaxValue( FLT_MAX ),
+              _L2CacheSize( 16 )
+        { 
+            fromConfig( _conf );
+        }
+
+    public:
+        virtual Config getConfig() const {
+            Config conf = DriverConfigOptions::getConfig();
+            conf.updateIfSet( "tile_size", _tileSize );
+            conf.updateIfSet( "nodata_value", _noDataValue );
+            conf.updateIfSet( "nodata_min", _noDataMinValue );
+            conf.updateIfSet( "nodata_max", _noDataMaxValue );
+            conf.updateIfSet( "blacklist_filename", _blacklistFilename);
+            //conf.updateIfSet( "enable_l2_cache", _enableL2Cache );
+            conf.updateIfSet( "l2_cache_size", _L2CacheSize );
+            conf.updateObjIfSet( "profile", _profileOptions );
+            return conf;
+        }
+
+    protected:
+        virtual void mergeConfig( const Config& conf ) {
+            DriverConfigOptions::mergeConfig( conf );
+            fromConfig( conf );
+        }
+
+    private:
+        void fromConfig( const Config& conf ) {
+            conf.getIfSet( "tile_size", _tileSize );
+            conf.getIfSet( "nodata_value", _noDataValue );
+            conf.getIfSet( "nodata_min", _noDataMinValue );
+            conf.getIfSet( "nodata_max", _noDataMaxValue );
+            conf.getIfSet( "blacklist_filename", _blacklistFilename);
+            //conf.getIfSet( "enable_l2_cache", _enableL2Cache );
+            conf.getIfSet( "l2_cache_size", _L2CacheSize );
+            conf.getObjIfSet( "profile", _profileOptions );
+
+            // special handling of default tile size:
+            if ( !tileSize().isSet() )
+                conf.getIfSet( "default_tile_size", _tileSize );
+            // remove it now so it does not get serialized
+            _conf.remove( "default_tile_size" );
+        }
+
+        optional<int> _tileSize;
+        optional<float> _noDataValue, _noDataMinValue, _noDataMaxValue;
+        optional<ProfileOptions> _profileOptions;
+        optional<std::string> _blacklistFilename;
+        optional<int> _L2CacheSize;
+        //optional<bool> _enableL2Cache;
+    };
+
+    typedef std::vector<TileSourceOptions> TileSourceOptionsVector;
+
+    /**
+     * A collection of tiles that should be considered blacklisted
+     */
+    class OSGEARTH_EXPORT TileBlacklist : public virtual osg::Referenced
+    {
+    public:
+        /**
+         *Creates a new TileBlacklist
+         */
+        TileBlacklist();
+
+        /**
+         *Adds the given tile to the blacklist
+         */
+        void add(const osgTerrain::TileID &tile);
+
+        /**
+         *Removes the given tile from the blacklist
+         */
+        void remove(const osgTerrain::TileID& tile);
+
+        /**
+         *Removes all tiles from the blacklist
+         */
+        void clear();
+
+        /**
+         *Returns whether the given tile is in the blacklist
+         */
+        bool contains(const osgTerrain::TileID &tile) const;
+
+        /**
+         *Returns the size of the blacklist
+         */
+        unsigned int size() const;
+
+        /**
+         *Reads a TileBlacklist from the given istream
+         */
+        static TileBlacklist* read(std::istream &in);
+
+        /**
+         *Reads a TileBlacklist from the given filename
+         */
+        static TileBlacklist* read(const std::string &filename);
+
+        /**
+         *Writes this TileBlacklist to the given ostream
+         */
+        void write(std::ostream &output) const;
+
+        /**
+         *Writes this TileBlacklist to the given filename
+         */
+        void write(const std::string &filename) const;
+
+    private:
+        typedef std::set< osgTerrain::TileID > BlacklistedTiles;
+        BlacklistedTiles _tiles;
+        osgEarth::Threading::ReadWriteMutex _mutex;
+    };
+
+    /**
+     * A TileSource is an object that can create image and/or heightfield tiles. Driver 
+     * plugins are responsible for creating and returning a TileSource that the Map
+     * will then use to create tiles for tile keys.
+     */
+    class OSGEARTH_EXPORT TileSource : public virtual osg::Object
+    {
+    public:
+        struct ImageOperation : public osg::Referenced {
+            virtual void operator()( osg::ref_ptr<osg::Image>& in_out_image ) =0;
+        };
+
+        struct HeightFieldOperation : public osg::Referenced {
+            virtual void operator()( osg::ref_ptr<osg::HeightField>& in_out_hf ) =0;
+        };
+
+    public:        
+        TileSource( const TileSourceOptions& options =TileSourceOptions() );
+
+        /**
+         * Gets the number of pixels per tile for this TileSource.
+         */
+        virtual int getPixelsPerTile() const;   
+
+        /**
+         * Gets the list of areas with data for this TileSource
+         */
+        const DataExtentList& getDataExtents() const { return _dataExtents; }
+        DataExtentList& getDataExtents() { return _dataExtents; }
+
+	    /**
+    	 * Creates an image for the given TileKey
+		 */
+        virtual osg::Image* createImage(
+            const TileKey& key,
+            ImageOperation* op =0L,
+            ProgressCallback* progress =0L );
+
+        /**
+         * Creates a heightfield for the given TileKey
+         */
+        virtual osg::HeightField* createHeightField(
+            const TileKey& key,
+            HeightFieldOperation* prepOp =0L,
+            ProgressCallback* progress = 0L );     
+
+    public:
+
+        /**
+         * Returns True if this tile source initialized properly and has a valid
+         * profile.
+         */
+        virtual bool isOK() const;
+        bool isValid() const { return isOK(); }
+
+        /**
+         * Gets the Profile of the TileSource
+         */
+        virtual const Profile* getProfile() const;
+
+		/**
+		 * Gets the nodata elevation value
+		 */
+        virtual float getNoDataValue() {
+            return _options.noDataValue().value(); }
+
+		/**
+		 * Gets the nodata min value
+		 */
+        virtual float getNoDataMinValue() {
+            return _options.noDataMinValue().value(); }
+
+		/**
+		 * Gets the nodata max value
+		 */
+        virtual float getNoDataMaxValue() {
+            return _options.noDataMaxValue().value(); }
+
+        /**
+         * Gets the maximum level of detail available from the tile source. Unlike 
+         * getMaxLevel(), which reports the maximum level at which to use this tile 
+         * source in a Map, this method reports the maximum level for which the 
+         * tile source is able to return data.
+         */
+        virtual unsigned int getMaxDataLevel() const;
+
+        /**
+         * Gets the minimum level of detail available from the tile source. Unlike 
+         * getMinLevel(), which reports the minimum level at which to use this tile 
+         * source in a Map, this method reports the minimum level for which the 
+         * tile source is able to return data.
+         */
+        virtual unsigned int getMinDataLevel() const;
+
+        /**
+         * Returns true if data from this source can be cached to disk
+         */
+        virtual bool supportsPersistentCaching() const;
+
+        /**
+         * Gets the preferred extension for this TileSource
+         */
+        virtual std::string getExtension() const {return "png";}
+
+        /**
+         *Gets the blacklist for this TileSource
+         */
+        TileBlacklist* getBlacklist();
+        const TileBlacklist* getBlacklist() const;     
+
+        /**
+         * Whether or not the source has data for the given TileKey
+         */
+        virtual bool hasData(const TileKey& key) const;
+
+        /**
+         * Whether the tile source can generate data for the specified LOD.
+         */
+        virtual bool hasDataAtLOD( unsigned lod ) const;
+
+        /**
+         * Whether the tile source can generate data within the specified extent
+         */
+        virtual bool hasDataInExtent( const GeoExtent& extent ) const;
+
+        /**
+         * Whether this TileSource produces tiles whose data can change after
+         * it's been created.
+         */
+        virtual bool isDynamic() const { return false; }
+
+
+        virtual osg::Object* cloneType() const { return 0; } // cloneType() not appropriate
+        virtual osg::Object* clone(const osg::CopyOp&) const { return 0; } // clone() not appropriate
+        virtual bool isSameKindAs(const osg::Object* obj) const { return dynamic_cast<const TileSource*>(obj)!=NULL; }
+        virtual const char* className() const { return "TileSource"; }
+        virtual const char* libraryName() const { return "osgEarth"; }
+
+		/**
+		 * Initialize the TileSource.  The profile should be computed and set here using setProfile()
+		 */
+		virtual void initialize( const std::string& referenceURI, const Profile* overrideProfile = NULL) = 0;
+
+        const TileSourceOptions& getOptions() const {
+            return _options; }
+   
+    protected:
+
+        virtual ~TileSource();
+
+		/**
+		 * Creates an image for the given TileKey.
+         * The returned object is new and is the responsibility of the caller.
+		 */
+		virtual osg::Image* createImage( const TileKey& key, ProgressCallback* progress ) = 0;
+
+        /**
+         * Creates a heightfield for the given TileKey
+         * The returned object is new and is the responsibility of the caller.
+         */
+        virtual osg::HeightField* createHeightField( const TileKey& key, ProgressCallback* progress );
+
+		/**
+		 * Called by subclasses to initialize their profile
+		 */
+		void setProfile( const Profile* profile );
+
+    private:
+        osg::ref_ptr<const Profile> _profile;
+        const TileSourceOptions _options;
+
+        friend class Map;
+        friend class MapEngine;
+        friend class TileSourceFactory;
+
+        osg::ref_ptr< TileBlacklist > _blacklist;
+        std::string _blacklistFilename;
+
+		osg::ref_ptr<MemCache> _memCache;
+
+        DataExtentList _dataExtents;
+        //osg::ref_ptr< RTree<unsigned int> > _dataExtentsIndex;
+    };
+
+    
+    typedef std::vector< osg::ref_ptr<TileSource> > TileSourceVector;
+
+    //--------------------------------------------------------------------
+
+    class OSGEARTH_EXPORT TileSourceDriver : public osgDB::ReaderWriter
+    {
+    protected:
+        const TileSourceOptions& getTileSourceOptions( const osgDB::ReaderWriter::Options* rwOpt ) const;
+    };
+
+    //--------------------------------------------------------------------
+
+    /**
+     * Creates TileSource instances and chains them together to create
+     * tile source "pipelines" for data access and processing.
+     */
+    class OSGEARTH_EXPORT TileSourceFactory
+    {   
+	public:
+        static TileSource* create( const TileSourceOptions& options );
+    };
+}
+
+#endif // OSGEARTH_TILE_SOURCE_H

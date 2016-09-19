@@ -1,0 +1,188 @@
+/* -*-c++-*- */
+/* osgEarth - Dynamic map generation toolkit for OpenSceneGraph
+ * Copyright 2008-2010 Pelican Mapping
+ * http://osgearth.org
+ *
+ * osgEarth is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>
+ */
+
+#ifndef OSGEARTH_REGISTRY
+#define OSGEARTH_REGISTRY 1
+
+#include <osgEarth/Common>
+#include <osgEarth/Caching>
+#include <osgEarth/Capabilities>
+#include <osgEarth/Profile>
+#include <osgEarth/TaskService>
+#include <OpenThreads/ReentrantMutex>
+#include <OpenThreads/ScopedLock>
+#include <osg/Referenced>
+#include <osgDB/ReaderWriter>
+
+#define GDAL_SCOPED_LOCK \
+    OpenThreads::ScopedLock<OpenThreads::ReentrantMutex> _slock( osgEarth::Registry::instance()->getGDALMutex() )\
+    
+
+namespace osgEarth
+{    
+    class ShaderFactory;
+
+    /**
+     * Application-wide global repository.
+     */
+    class OSGEARTH_EXPORT Registry : public osg::Referenced
+    {
+    public:
+        /** Access the global Registry singleton. */
+        static Registry* instance(bool erase = false);
+
+        /** Gets a well-known named profile instance. */
+        const Profile* getNamedProfile( const std::string& name ) const;
+
+        /** Gets the global-geodetic builtin profile */
+        const Profile* getGlobalGeodeticProfile() const;
+
+        /** Gets the global-meractor builtin profile */
+        const Profile* getGlobalMercatorProfile() const;
+
+        /** Gets the unified cube builtin profile */
+        const Profile* getCubeProfile() const;
+
+        /** Access to the application-wide GDAL serialization mutex. GDAL is not thread-safe. */
+        OpenThreads::ReentrantMutex& getGDALMutex();
+
+        /** Global override of map caching settings. */
+        Cache* getCacheOverride() const;
+        void setCacheOverride( Cache* cacheOverride );
+
+        /** Registers a mapping of a mime-type to an extension. A process fetching data
+          * over HTTP can use this facility to determine the proper ReaderWriter to use
+          * when there is no filename extension to rely upon.
+          */
+        void addMimeTypeExtensionMapping(const std::string fromMimeType, const std::string toExt);
+
+        /** gets a reader/writer that handles the extension mapped to by one of
+          * the registered mime-types. */
+        osgDB::ReaderWriter* getReaderWriterForMimeType(const std::string& mimeType);
+
+        /**
+         * Whether the given filename is blacklisted
+         */
+        bool isBlacklisted(const std::string &filename);
+
+        /**
+         * Blacklist the given filename
+         */
+        void blacklist(const std::string &filename);
+
+        /**
+         * Gets the number of blacklisted filenames
+         */
+        unsigned int getNumBlacklistedFilenames();
+
+        /**
+         * Clears the blacklist
+         */
+        void clearBlacklist();
+
+        /**
+         * The system wide default vertical spatial reference system.
+         */
+        const VerticalSpatialReference* getDefaultVSRS() const;
+
+        /**
+         * Gets the graphics hardware capabilities for this platform
+         */
+        const Capabilities& getCapabilities() const;
+
+        /**
+         * Gets or sets the default shader factory. You can replace the default
+         * shader factory if you want to alter any of osgEarth's baseline shaders
+         * (advanced usage).
+         */
+        ShaderFactory* getShaderFactory() const;
+        void setShaderFactory( ShaderFactory* lib );
+
+        /**
+         * Gets a reference to the global task service manager.
+         */
+        TaskServiceManager* getTaskServiceManager() {
+            return _taskServiceManager.get(); }
+
+        /**
+         * Generates an instance-wide global unique ID.
+         */
+        UID createUID();
+
+        /**
+         * Gets or sets the local root of the system default cache.
+         */
+        void setCacheDirectory( const std::string& dir );
+
+        const std::string& getCacheDirectory() const;
+
+        /**
+         * Gets the default set of osgDB::Options to use.
+         */
+        const osgDB::Options* getDefaultOptions() const { return _defaultOptions.get(); }
+
+        /**
+         * Clones an options structure (fixing the archive caching), or creates
+         * a new one.
+         */
+        osgDB::Options* cloneOrCreateOptions( const osgDB::Options* options =0L ) const;
+
+    protected:
+        virtual ~Registry();
+        Registry();
+
+
+        void destruct();
+
+        OpenThreads::ReentrantMutex _gdal_mutex;
+        bool _gdal_registered;
+
+        osg::ref_ptr<const Profile> _global_geodetic_profile;
+        osg::ref_ptr<const Profile> _global_mercator_profile;
+        osg::ref_ptr<const Profile> _cube_profile;
+
+        OpenThreads::Mutex _regMutex;        
+        int _numGdalMutexGets;
+        
+        typedef std::map< std::string, std::string> MimeTypeExtensionMap;
+        // maps mime-types to extensions.
+        MimeTypeExtensionMap _mimeTypeExtMap;
+
+		osg::ref_ptr<Cache> _cacheOverride;
+
+        typedef std::set<std::string> StringSet;
+        StringSet _blacklistedFilenames;
+        OpenThreads::Mutex _blacklistMutex;
+
+        osg::ref_ptr<const VerticalSpatialReference> _defaultVSRS;
+
+        osg::ref_ptr<ShaderFactory> _shaderLib;
+
+        osg::ref_ptr<TaskServiceManager> _taskServiceManager;
+
+        int _uidGen;
+
+        osg::ref_ptr< Capabilities > _caps;
+        void initCapabilities();
+
+        osg::ref_ptr<osgDB::Options> _defaultOptions;
+    };
+}
+
+#endif //OSGEARTH_REGISTRY
